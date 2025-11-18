@@ -100,7 +100,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """健康检查端点 - 实际调用 API 验证账号可用性"""
+    """轻量级健康检查端点 - 仅检查服务状态和账号配置"""
     try:
         all_accounts = list_all_accounts()
         enabled_accounts = [acc for acc in all_accounts if acc.get('enabled')]
@@ -113,138 +113,11 @@ async def health():
                 "total_accounts": len(all_accounts)
             }
 
-        # 测试第一个启用账号的可用性
-        test_account = enabled_accounts[0]
-        config = get_config_sync()
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                # 使用与 /v1/messages 相同的逻辑获取认证头（自动处理 JWT 过期和刷新）
-                test_account, auth_headers_base = await get_auth_headers_with_retry()
-
-                headers = {
-                    **auth_headers_base,
-                    'Content-Type': 'application/x-amz-json-1.0',
-                    'X-Amz-Target': 'AmazonCodeWhispererStreamingService.GenerateAssistantResponse'
-                }
-
-                test_body = {
-                    "conversationState": {
-                        "currentMessage": {"userInputMessage": {"content": "hi"}},
-                        "chatTriggerType": "MANUAL"
-                    }
-                }
-
-                response = await client.post(
-                    config.api_endpoint,
-                    headers=headers,
-                    json=test_body
-                )
-
-                # 如果 401/403，尝试刷新 token 并重试
-                if response.status_code in (401, 403):
-                    error_text = response.text
-                    if "TEMPORARILY_SUSPENDED" in error_text:
-                        # 检测到封号，保存封禁信息
-                        from datetime import datetime
-                        suspend_info = {
-                            "suspended": True,
-                            "suspended_at": datetime.now().isoformat(),
-                            "suspend_reason": "TEMPORARILY_SUSPENDED"
-                        }
-                        current_other = test_account.get('other') or {}
-                        current_other.update(suspend_info)
-                        update_account(test_account['id'], enabled=False, other=current_other)
-
-                        return {
-                            "status": "unhealthy",
-                            "reason": "account_suspended",
-                            "error": "账号已被封禁",
-                            "enabled_accounts": len(enabled_accounts),
-                            "total_accounts": len(all_accounts)
-                        }
-
-                    # 尝试刷新 token 并重试
-                    try:
-                        test_account = await refresh_account_token(test_account)
-                        access_token = test_account.get('accessToken')
-                        headers['Authorization'] = f'Bearer {access_token}'
-
-                        # 使用新 token 重试
-                        retry_response = await client.post(
-                            config.api_endpoint,
-                            headers=headers,
-                            json=test_body
-                        )
-
-                        if retry_response.status_code == 403 and "TEMPORARILY_SUSPENDED" in retry_response.text:
-                            # 重试后仍然封号
-                            from datetime import datetime
-                            suspend_info = {
-                                "suspended": True,
-                                "suspended_at": datetime.now().isoformat(),
-                                "suspend_reason": "TEMPORARILY_SUSPENDED"
-                            }
-                            current_other = test_account.get('other') or {}
-                            current_other.update(suspend_info)
-                            update_account(test_account['id'], enabled=False, other=current_other)
-
-                            return {
-                                "status": "unhealthy",
-                                "reason": "account_suspended",
-                                "error": "账号已被封禁",
-                                "enabled_accounts": len(enabled_accounts),
-                                "total_accounts": len(all_accounts)
-                            }
-
-                        if retry_response.status_code == 200:
-                            return {
-                                "status": "healthy",
-                                "enabled_accounts": len(enabled_accounts),
-                                "total_accounts": len(all_accounts),
-                                "tested_account": test_account.get('label') or test_account['id']
-                            }
-
-                        return {
-                            "status": "unhealthy",
-                            "reason": f"api_error_{retry_response.status_code}",
-                            "error": retry_response.text[:200],
-                            "enabled_accounts": len(enabled_accounts),
-                            "total_accounts": len(all_accounts)
-                        }
-                    except Exception as refresh_error:
-                        return {
-                            "status": "unhealthy",
-                            "reason": "token_refresh_failed",
-                            "error": str(refresh_error),
-                            "enabled_accounts": len(enabled_accounts),
-                            "total_accounts": len(all_accounts)
-                        }
-
-                if response.status_code == 200:
-                    return {
-                        "status": "healthy",
-                        "enabled_accounts": len(enabled_accounts),
-                        "total_accounts": len(all_accounts),
-                        "tested_account": test_account.get('label') or test_account['id']
-                    }
-
-                return {
-                    "status": "unhealthy",
-                    "reason": f"api_error_{response.status_code}",
-                    "error": response.text[:200],
-                    "enabled_accounts": len(enabled_accounts),
-                    "total_accounts": len(all_accounts)
-                }
-
-            except Exception as api_error:
-                return {
-                    "status": "unhealthy",
-                    "reason": "api_call_failed",
-                    "error": str(api_error),
-                    "enabled_accounts": len(enabled_accounts),
-                    "total_accounts": len(all_accounts)
-                }
+        return {
+            "status": "healthy",
+            "enabled_accounts": len(enabled_accounts),
+            "total_accounts": len(all_accounts)
+        }
 
     except Exception as e:
         return {
