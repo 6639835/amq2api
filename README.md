@@ -186,7 +186,26 @@ python3 gemini_oauth_client.py
 
 ### Web 管理界面
 
-访问 `http://localhost:8080/admin` 打开 Web 管理界面，支持：
+访问 `http://localhost:8080/admin` 打开 Web 管理界面。
+
+**⚠️ 管理页面鉴权：**
+
+为了保护管理页面不被未授权访问，建议在 `.env` 文件中设置 `ADMIN_KEY`：
+
+```bash
+# .env
+ADMIN_KEY=your_secret_admin_key_here
+```
+
+设置后，访问管理页面需要在 URL 中添加密钥参数：
+
+```
+http://localhost:8080/admin?key=your_secret_admin_key_here
+```
+
+如果不设置 `ADMIN_KEY`，管理页面将无需鉴权即可访问（仅适用于本地开发）。
+
+**管理界面功能：**
 
 - ✅ 账号列表查看（显示启用状态、Token 状态、封禁状态）
 - ✅ 创建/编辑/删除账号
@@ -194,6 +213,33 @@ python3 gemini_oauth_client.py
 - ✅ 手动刷新 Token
 - ✅ 测试所有启用账号
 - ✅ 健康检查（实际调用 API 验证可用性）
+
+### Gemini 投喂站
+
+访问 `http://localhost:8080/donate` 打开 Gemini 投喂站页面。
+
+**功能特性：**
+
+- 🎁 一键投喂 Gemini 账号（通过 Google OAuth 授权）
+- 📊 实时显示总 Credits、活跃账号数、总账号数
+- 📋 账号列表展示（额度、重置时间、项目 ID、添加时间）
+- 🔄 自动刷新（每 30 秒）
+- ✅ 自动证账号可用性（获取项目 ID）
+- 💾 自动导入到数据库
+
+**投喂流程：**
+
+1. 访问投喂站页面
+2. 点击"投喂我的 Gemini 账号"按钮
+3. 在 Google OAuth 页面授权
+4. 系统自动验证账号并导入数据库
+5. 重定向回投喂站，显示成功消息
+
+**注意事项：**
+
+- 投喂站使用固定的 Google OAuth Client ID 和 Secret
+- 账号会自动添加到数据库，类型为 `gemini`
+- 需要设置 `BASE_URL` 环境变量（生产环境）以确保 OAuth 回调正确
 
 ### 账号管理 API
 

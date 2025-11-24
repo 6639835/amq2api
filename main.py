@@ -694,13 +694,280 @@ async def get_account_quota(account_id: str):
 
 # 管理页面
 @app.get("/admin", response_class=FileResponse)
-async def admin_page():
-    """管理页面"""
+async def admin_page(key: Optional[str] = None):
+    """管理页面（需要鉴权）"""
+    import os
     from pathlib import Path
+
+    # 获取管理员密钥
+    admin_key = os.getenv("ADMIN_KEY")
+
+    # 如果设置了 ADMIN_KEY，则需要验证
+    if admin_key:
+        if not key or key != admin_key:
+            raise HTTPException(
+                status_code=403,
+                detail="访问被拒绝：需要有效的管理员密钥。请在 URL 中添加 ?key=YOUR_ADMIN_KEY"
+            )
+
     frontend_path = Path(__file__).parent / "frontend" / "index.html"
     if not frontend_path.exists():
         raise HTTPException(status_code=404, detail="管理页面不存在")
     return FileResponse(str(frontend_path))
+
+
+# Gemini 投喂站页面
+@app.get("/donate", response_class=FileResponse)
+async def donate_page():
+    """Gemini 投喂站页面"""
+    from pathlib import Path
+    frontend_path = Path(__file__).parent / "frontend" / "donate.html"
+    if not frontend_path.exists():
+        raise HTTPException(status_code=404, detail="投喂站页面不存在")
+    return FileResponse(str(frontend_path))
+
+
+# Gemini OAuth 回调处理
+@app.get("/api/gemini/oauth-callback")
+async def gemini_oauth_callback(code: Optional[str] = None, error: Optional[str] = None):
+    """处理 Gemini OAuth 回调"""
+    if error:
+        logger.error(f"OAuth 授权失败: {error}")
+        return JSONResponse(
+            status_code=400,
+            content={"error": error, "message": "授权失败"}
+        )
+
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少授权码")
+
+    try:
+        # 使用固定的 client credentials
+        client_id = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        client_secret = "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"
+
+        # 交换授权码获取 tokens
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": f"{get_base_url()}/api/gemini/oauth-callback"
+                },
+                headers={
+                    'x-goog-api-client': 'gl-node/22.18.0',
+                    'User-Agent': 'google-api-nodejs-client/10.3.0'
+                }
+            )
+
+            if response.status_code != 200:
+                error_msg = f"Token 交换失败: {response.text}"
+                logger.error(error_msg)
+                from urllib.parse import quote
+                return JSONResponse(
+                    status_code=302,
+                    headers={"Location": f"/donate?error={quote(error_msg)}"}
+                )
+
+            tokens = response.json()
+            refresh_token = tokens.get('refresh_token')
+
+            if not refresh_token:
+                error_msg = "未获取到 refresh_token"
+                logger.error(error_msg)
+                from urllib.parse import quote
+                return JSONResponse(
+                    status_code=302,
+                    headers={"Location": f"/donate?error={quote(error_msg)}"}
+                )
+
+        # 测试账号可用性（获取项目 ID）
+        token_manager = GeminiTokenManager(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            api_endpoint="https://daily-cloudcode-pa.sandbox.googleapis.com"
+        )
+
+        try:
+            project_id = await token_manager.get_project_id()
+            logger.info(f"账号验证成功，项目 ID: {project_id}")
+        except Exception as e:
+            error_msg = f"账号验证失败: {str(e)}"
+            logger.error(error_msg)
+            from urllib.parse import quote
+            return JSONResponse(
+                status_code=302,
+                headers={"Location": f"/donate?error={quote(error_msg)}"}
+            )
+
+        # 获取配额信息
+        try:
+            models_data = await token_manager.fetch_available_models(project_id)
+            credits = extract_credits_from_models_data(models_data)
+            reset_time = extract_reset_time_from_models_data(models_data)
+        except Exception as e:
+            logger.warning(f"获取配额信息失败: {e}")
+            credits = 0
+            reset_time = None
+
+        # 自动导入到数据库
+        import uuid
+        from datetime import datetime
+        account_data = {
+            "id": str(uuid.uuid4()),
+            "label": f"Gemini-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "refreshToken": refresh_token,
+            "accessToken": tokens.get('access_token', ''),
+            "other": {
+                "project": project_id,
+                "api_endpoint": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+                "credits": credits,
+                "resetTime": reset_time
+            },
+            "type": "gemini",
+            "enabled": True,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        }
+
+        create_account(account_data)
+        logger.info(f"Gemini 账号已添加: {account_data['label']}")
+
+        # 重定向回投喂站页面
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/donate?success=true", status_code=302)
+
+    except Exception as e:
+        logger.error(f"处理 OAuth 回调失败: {e}")
+        from urllib.parse import quote
+        return RedirectResponse(url=f"/donate?error={quote(str(e))}", status_code=302)
+
+
+# 获取 Gemini 账号列表和统计信息
+@app.get("/api/gemini/accounts")
+async def get_gemini_accounts():
+    """获取 Gemini 账号列表和统计信息"""
+    try:
+        accounts = list_enabled_accounts(account_type="gemini")
+
+        # 更新每个账号的配额信息
+        updated_accounts = []
+        total_credits = 0
+
+        for account in accounts:
+            try:
+                other = account.get("other", {})
+                if isinstance(other, str):
+                    import json
+                    other = json.loads(other)
+
+                # 尝试刷新配额信息
+                token_manager = GeminiTokenManager(
+                    client_id=account["clientId"],
+                    client_secret=account["clientSecret"],
+                    refresh_token=account["refreshToken"],
+                    api_endpoint=other.get("api_endpoint", "https://daily-cloudcode-pa.sandbox.googleapis.com")
+                )
+
+                project_id = other.get("project") or await token_manager.get_project_id()
+                models_data = await token_manager.fetch_available_models(project_id)
+
+                credits = extract_credits_from_models_data(models_data)
+                reset_time = extract_reset_time_from_models_data(models_data)
+
+                # 更新 other 字段
+                other["credits"] = credits
+                other["resetTime"] = reset_time
+                other["project"] = project_id
+
+                total_credits += credits
+
+                updated_accounts.append({
+                    "id": account["id"],
+                    "label": account["label"],
+                    "enabled": account["enabled"],
+                    "credits": credits,
+                    "resetTime": reset_time,
+                    "projectId": project_id,
+                    "created_at": account.get("created_at")
+                })
+
+            except Exception as e:
+                logger.error(f"更新账号 {account['id']} 配额信息失败: {e}")
+                other = account.get("other", {})
+                if isinstance(other, str):
+                    import json
+                    other = json.loads(other)
+
+                updated_accounts.append({
+                    "id": account["id"],
+                    "label": account["label"],
+                    "enabled": account["enabled"],
+                    "credits": other.get("credits", 0),
+                    "resetTime": other.get("resetTime"),
+                    "projectId": other.get("project", "N/A"),
+                    "created_at": account.get("created_at")
+                })
+
+        return JSONResponse(content={
+            "totalCredits": total_credits,
+            "activeCount": len([a for a in accounts if a.get("enabled")]),
+            "totalCount": len(accounts),
+            "accounts": updated_accounts
+        })
+
+    except Exception as e:
+        logger.error(f"获取 Gemini 账号列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取账号列表失败: {str(e)}")
+
+
+def get_base_url() -> str:
+    """获取服务器基础 URL"""
+    import os
+    # 优先使用环境变量
+    base_url = os.getenv("BASE_URL")
+    if base_url:
+        return base_url.rstrip('/')
+
+    # 默认使用 localhost
+    port = os.getenv("PORT", "8080")
+    return f"http://localhost:{port}"
+
+
+def extract_credits_from_models_data(models_data: dict) -> int:
+    """从模型数据中提取 credits"""
+    try:
+        # 根据实际 API 响应结构提取 credits
+        # 这里需要根据实际返回的数据结构调整
+        if "quota" in models_data:
+            return models_data["quota"].get("remaining", 0)
+        elif "credits" in models_data:
+            return models_data.get("credits", 0)
+        return 0
+    except Exception as e:
+        logger.error(f"提取 credits 失败: {e}")
+        return 0
+
+
+def extract_reset_time_from_models_data(models_data: dict) -> Optional[str]:
+    """从模型数据中提取重置时间"""
+    try:
+        # 根据实际 API 响应结构提取重置时间
+        # 这里需要根据实际返回的数据结构调整
+        if "quota" in models_data:
+            return models_data["quota"].get("resetTime")
+        elif "resetTime" in models_data:
+            return models_data.get("resetTime")
+        return None
+    except Exception as e:
+        logger.error(f"提取重置时间失败: {e}")
+        return None
 
 
 def parse_claude_request(data: dict) -> ClaudeRequest:

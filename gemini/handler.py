@@ -43,12 +43,31 @@ async def handle_gemini_stream(response_stream: AsyncIterator[bytes], model: str
 
     # 处理流式响应
     buffer = ""
+    byte_buffer = b""  # 用于累积不完整的 UTF-8 字节
+
     async for chunk in response_stream:
         if not chunk:
             continue
 
         try:
-            text = chunk.decode('utf-8')
+            # 累积字节
+            byte_buffer += chunk
+
+            # 尝试解码,使用 'ignore' 忽略不完整的字节序列
+            try:
+                text = byte_buffer.decode('utf-8')
+                byte_buffer = b""  # 解码成功,清空字节缓冲区
+            except UnicodeDecodeError:
+                # 解码失败,可能是不完整的多字节字符,等待更多数据
+                # 保留最后几个字节(最多4个,UTF-8最多4字节)
+                if len(byte_buffer) > 4:
+                    # 尝试解码前面的部分
+                    text = byte_buffer[:-4].decode('utf-8', errors='ignore')
+                    byte_buffer = byte_buffer[-4:]
+                else:
+                    # 字节太少,继续等待
+                    continue
+
             buffer += text
 
             while '\r\n\r\n' in buffer:
