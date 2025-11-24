@@ -862,16 +862,19 @@ async def get_gemini_accounts():
 
         for account in accounts:
             try:
-                other = account.get("other", {})
+                other = account.get("other") or {}
                 if isinstance(other, str):
                     import json
-                    other = json.loads(other)
+                    try:
+                        other = json.loads(other)
+                    except json.JSONDecodeError:
+                        other = {}
 
                 # 尝试刷新配额信息
                 token_manager = GeminiTokenManager(
-                    client_id=account["clientId"],
-                    client_secret=account["clientSecret"],
-                    refresh_token=account["refreshToken"],
+                    client_id=account.get("clientId", ""),
+                    client_secret=account.get("clientSecret", ""),
+                    refresh_token=account.get("refreshToken", ""),
                     api_endpoint=other.get("api_endpoint", "https://daily-cloudcode-pa.sandbox.googleapis.com")
                 )
 
@@ -889,9 +892,9 @@ async def get_gemini_accounts():
                 total_credits += credits
 
                 updated_accounts.append({
-                    "id": account["id"],
-                    "label": account["label"],
-                    "enabled": account["enabled"],
+                    "id": account.get("id", ""),
+                    "label": account.get("label", "未命名"),
+                    "enabled": account.get("enabled", False),
                     "credits": credits,
                     "resetTime": reset_time,
                     "projectId": project_id,
@@ -899,16 +902,19 @@ async def get_gemini_accounts():
                 })
 
             except Exception as e:
-                logger.error(f"更新账号 {account['id']} 配额信息失败: {e}")
-                other = account.get("other", {})
+                logger.error(f"更新账号 {account.get('id', 'unknown')} 配额信息失败: {e}")
+                other = account.get("other") or {}
                 if isinstance(other, str):
                     import json
-                    other = json.loads(other)
+                    try:
+                        other = json.loads(other)
+                    except json.JSONDecodeError:
+                        other = {}
 
                 updated_accounts.append({
-                    "id": account["id"],
-                    "label": account["label"],
-                    "enabled": account["enabled"],
+                    "id": account.get("id", ""),
+                    "label": account.get("label", "未命名"),
+                    "enabled": account.get("enabled", False),
                     "credits": other.get("credits", 0),
                     "resetTime": other.get("resetTime"),
                     "projectId": other.get("project", "N/A"),
