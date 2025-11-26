@@ -92,6 +92,25 @@ async def verify_admin_key(x_admin_key: Optional[str] = Header(None)):
     return True
 
 
+# API Key 鉴权依赖
+async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+    """验证 API Key（Anthropic API 格式）"""
+    import os
+    api_key = os.getenv("API_KEY")
+
+    # 如果没有设置 API_KEY，则不需要验证
+    if not api_key:
+        return True
+
+    # 如果设置了 API_KEY，则必须验证
+    if not x_api_key or x_api_key != api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="未授权：需要有效的 API Key。请在请求头中添加 x-api-key"
+        )
+    return True
+
+
 # Pydantic 模型
 class AccountCreate(BaseModel):
     label: Optional[str] = None
@@ -154,7 +173,7 @@ async def health():
 
 
 @app.post("/v1/messages")
-async def create_message(request: Request):
+async def create_message(request: Request, _: bool = Depends(verify_api_key)):
     """
     Claude API 兼容的消息创建端点（智能路由）
     根据模型和账号数量自动选择渠道（Amazon Q 或 Gemini）
@@ -448,7 +467,7 @@ async def create_message(request: Request):
 
 
 @app.post("/v1/gemini/messages")
-async def create_gemini_message(request: Request):
+async def create_gemini_message(request: Request, _: bool = Depends(verify_api_key)):
     """
     Gemini API 端点
     接收 Claude 格式的请求，转换为 Gemini 格式并返回流式响应
