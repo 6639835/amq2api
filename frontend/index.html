@@ -288,8 +288,8 @@ function toggleImportFormat() {
   const textarea = document.getElementById('import_data');
 
   if (type === 'amazonq') {
-    label.textContent = '账号数据（每行格式：label|clientId|clientSecret|refreshToken|accessToken）';
-    textarea.placeholder = '我的账号|client_id|client_secret|refresh_token|access_token';
+    label.textContent = '账号数据（每行格式：email|password|clientId|clientSecret|refreshToken|accessToken）';
+    textarea.placeholder = 'user@example.com|password|client_id|client_secret|refresh_token|access_token';
   } else if (type === 'gemini') {
     label.textContent = '账号数据（每行格式：label|clientId|clientSecret|refreshToken|accessToken|project|api_endpoint）';
     textarea.placeholder = '我的账号|client_id|client_secret|refresh_token|access_token|project_id|api_endpoint';
@@ -386,6 +386,7 @@ function renderAccounts(list) {
       row('状态', '⚠️ 已被封禁');
       row('封禁时间', other.suspended_at || 'N/A');
     }
+    row('创建时间', acc.created_at || 'N/A');
     row('刷新状态', acc.last_refresh_status || 'never');
     row('刷新时间', acc.last_refresh_time || 'N/A');
     row('Client ID', acc.clientId);
@@ -656,12 +657,15 @@ async function importAccounts() {
     let type, label, clientId, clientSecret, refreshToken, accessToken, project, api_endpoint;
 
     if (importType === 'amazonq') {
-      if (parts.length < 5) {
+      if (parts.length < 6) {
         setImportStatus(`第 ${i+1} 行格式错误`, false);
         failed++;
         continue;
       }
-      [label, clientId, clientSecret, refreshToken, accessToken] = parts;
+      // email|password|clientId|clientSecret|refreshToken|accessToken
+      const [email, password, ...rest] = parts;
+      [clientId, clientSecret, refreshToken, accessToken] = rest;
+      label = email; // 使用 email 作为 label
       type = 'amazonq';
     } else if (importType === 'gemini') {
       if (parts.length < 5) {
