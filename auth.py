@@ -143,7 +143,7 @@ async def get_account_with_token() -> Tuple[Optional[Dict[str, Any]], str]:
     tried_account_ids = set()
 
     for attempt in range(max_retries):
-        account = get_random_account()
+        account = get_random_account(account_type="amazonq")
 
         # 如果数据库中有账号，使用多账号模式
         if account:
