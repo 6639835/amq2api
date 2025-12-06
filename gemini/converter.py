@@ -169,7 +169,7 @@ def convert_claude_to_gemini(claude_req: ClaudeRequest, project: str) -> Dict[st
         })
 
     # 重新组织消息，确保 tool_use 后紧跟对应的 tool_result
-    # contents = reorganize_tool_messages(contents)
+    contents = reorganize_tool_messages(contents)
 
     # 构建 Gemini 请求
     gemini_request = {
@@ -263,8 +263,9 @@ def map_claude_model_to_gemini(claude_model: str) -> str:
 
 def reorganize_tool_messages(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    重新组织消息，确保每个 tool_use 后紧跟对应的 tool_result
-    保持 thinking 和 tool_use 的相对顺序，只移动 tool_result
+    重新组织消息：
+    1. thinking 和下一个 part（带 thoughtSignature）组合在一起
+    2. functionCall 和对应的 functionResponse 组合在一起
 
     Args:
         contents: 原始消息列表
@@ -286,42 +287,78 @@ def reorganize_tool_messages(contents: List[Dict[str, Any]]) -> List[Dict[str, A
     if not tool_results:
         return contents
 
-    # 重新构建消息列表
+    # 平铺所有 parts，然后重新组合
     new_contents = []
 
     for msg in contents:
         parts = msg.get("parts", [])
-        new_parts = []
+        i = 0
 
-        for part in parts:
-            # 跳过 functionResponse，它们会被插入到对应的 functionCall 后面
+        while i < len(parts):
+            part = parts[i]
+
+            # 跳过 functionResponse，它们会被组合到 functionCall 中
             if "functionResponse" in part:
+                i += 1
                 continue
 
-            new_parts.append(part)
+            # 如果是 thinking，检查下一个 part 是否有 thoughtSignature
+            if part.get("thought"):
+                combined_parts = [part]
+                # 检查下一个 part 是否有 thoughtSignature
+                if i + 1 < len(parts) and "thoughtSignature" in parts[i + 1]:
+                    next_part = parts[i + 1]
+                    combined_parts.append(next_part)
+                    i += 1  # 跳过下一个 part
 
-            # 如果是 functionCall，立即插入对应的 functionResponse
-            if "functionCall" in part:
+                    # 如果下一个 part 是 functionCall，需要单独处理 functionResponse
+                    if "functionCall" in next_part:
+                        # thinking + functionCall(带 thoughtSignature) 在一起
+                        new_contents.append({
+                            "role": "model",
+                            "parts": combined_parts
+                        })
+                        # functionResponse 单独成消息
+                        tool_id = next_part["functionCall"].get("id")
+                        if tool_id and tool_id in tool_results:
+                            new_contents.append({
+                                "role": "user",
+                                "parts": [tool_results[tool_id]]
+                            })
+                        i += 1
+                        continue
+
+                new_contents.append({
+                    "role": msg["role"],
+                    "parts": combined_parts
+                })
+                i += 1
+
+            # 如果是 functionCall（且不带 thoughtSignature，因为带 thoughtSignature 的已经在上面处理了）
+            elif "functionCall" in part:
                 tool_id = part["functionCall"].get("id")
+
+                # functionCall 单独成消息
+                new_contents.append({
+                    "role": "model",
+                    "parts": [part]
+                })
+
+                # functionResponse 单独成消息
                 if tool_id and tool_id in tool_results:
-                    # 创建包含 tool_use 的 model 消息
-                    new_contents.append({
-                        "role": "model",
-                        "parts": [part]
-                    })
-                    # 创建包含 tool_result 的 user 消息
                     new_contents.append({
                         "role": "user",
                         "parts": [tool_results[tool_id]]
                     })
-                    new_parts.pop()  # 移除刚添加的 functionCall
+                i += 1
 
-        # 如果还有其他 parts（thinking, text 等），添加到消息中
-        if new_parts:
-            new_contents.append({
-                "role": msg["role"],
-                "parts": new_parts
-            })
+            # 其他 part 独立成消息
+            else:
+                new_contents.append({
+                    "role": msg["role"],
+                    "parts": [part]
+                })
+                i += 1
 
     return new_contents
 
